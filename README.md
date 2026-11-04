@@ -97,10 +97,17 @@ The values come from, in priority order:
    "Reset to automatic" in the dialog drops your edits for that
    game.
 2. **libretro-database** — RetroArch's metadata database (free,
-   no key). Open **Settings → Game metadata → "Download /
-   refresh game metadata"** once; only the systems present in
-   your library are downloaded, and the files are cached in
-   `cache/metadb/` next to the app. If a download fails (no
+   no key). **This happens automatically:** when a scan finds
+   games, the launcher downloads the metadata for the systems
+   present in your library in the background — no Settings step
+   needed — and fills in every scanned game, synopsis included.
+   Only the systems present in your library are downloaded, and
+   the files are cached in `cache/metadb/` next to the app, so
+   later scans use the cache without downloading again. A failed
+   automatic download (no network) is not retried on every
+   rescan in the same run. **Settings → Game metadata →
+   "Download / refresh game metadata"** remains as a manual
+   refresh whenever you want one. If a download fails (no
    network), the old data is kept and the failure is stated
    plainly — nothing is ever faked. PlayStation games are matched
    by their serial; other systems are matched by title, and a
@@ -166,9 +173,12 @@ says so on Windows rather than pretending.
 caches plus the downloaded metadata database) live next to the
 app — nothing is uploaded anywhere. RetroAchievements is only
 contacted, with your own key, to read your own profile when you
-select a game. Wikipedia is only contacted for a synopsis when a
-selected game has none from the other sources. The app ships
-with no credentials in it.
+select a game. The libretro-database metadata files are
+downloaded automatically when games are scanned in (public
+database files only — nothing about your library is sent), and
+Wikipedia is contacted for a synopsis when a scanned game has
+none from the other sources. The app ships with no credentials
+in it.
 
 ## Credits
 
