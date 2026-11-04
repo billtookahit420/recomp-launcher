@@ -17,6 +17,19 @@ Navigation:
              any time; the top bar shows its name, or "No
              controller detected" while none is connected.
 
+While a game launched through the launcher is running, pad
+input is suspended — Steam-style: SDL pad reads are global,
+not focus-based, so the pad would otherwise keep navigating
+behind the game and an A press could launch a second title.
+The top bar shows the running state instead ("▶ <title>
+running — controller is the game's"), and when the game
+exits input resumes cleanly: whatever the player is still
+holding is adopted as the baseline (poller.reset_edges), so
+it can't fire a phantom action. The main window supplies
+the suspension state per poll tick (input_suspended /
+running_title callables), since a launch can come from
+either view at any time.
+
 B and Esc SWITCH BACK to the desktop view — Big Picture is a view,
 not a separate app, and closing it never quits the launcher.
 """
@@ -98,7 +111,8 @@ class BPTile(QWidget):
 
 class BigPictureWindow(QWidget):
     def __init__(self, games_provider, on_launch, on_back,
-                 poller=None, on_focus=None):
+                 poller=None, on_focus=None, input_suspended=None,
+                 running_title=None):
         super().__init__(None, Qt.Window | Qt.FramelessWindowHint)
         self.setStyleSheet(BP_STYLE)
         self.games_provider = games_provider
@@ -106,6 +120,13 @@ class BigPictureWindow(QWidget):
         self.on_back = on_back
         self.on_focus = on_focus    # focused game changed (metadata)
         self.poller = poller or GamepadPoller(SdlBackend())
+        # Pad suspension while a launched game runs. Both are
+        # callables evaluated on every poll tick — never snapshots —
+        # because sessions can start/end at any time, from either
+        # view. Defaults keep standalone use/tests unsuspended.
+        self.input_suspended = input_suspended or (lambda: False)
+        self.running_title = running_title or (lambda: None)
+        self._pad_suspended = False
         self.sections = []          # ["all", system keys present]
         self.section_idx = 0
         self.focus_idx = 0
@@ -296,6 +317,23 @@ class BigPictureWindow(QWidget):
     def _poll_pad(self):
         if not self.isVisible():
             return
+        if self.input_suspended():
+            # A game launched through the launcher is running and
+            # the pad belongs to the game (SDL reads are global,
+            # not focus-based). No polling, no actions — and the
+            # status line says so, with the game's title. The
+            # backend itself is untouched: its discovery state is
+            # picked up again by poll() the moment this lifts.
+            self._pad_suspended = True
+            self._refresh_pad_status(suspended=True)
+            return
+        if self._pad_suspended:
+            # The game exited: resume, but first adopt the pad's
+            # current state as the edge baseline so a button or
+            # stick still held from gameplay can't fire a phantom
+            # action (e.g. A launching the focused tile).
+            self._pad_suspended = False
+            self.poller.reset_edges()
         # No "available" gate here: poll() is what gives the
         # backend its chance to (re)discover a controller, so it
         # must keep being called while none is connected yet.
@@ -303,14 +341,25 @@ class BigPictureWindow(QWidget):
             self.handle_action(action)
         self._refresh_pad_status()
 
-    def _refresh_pad_status(self):
-        name = self.poller.controller_name
-        if name:
-            text = f"🎮 {name}"
+    def _refresh_pad_status(self, suspended=False):
+        if suspended:
+            title = self.running_title()
+            if title:
+                if len(title) > 40:
+                    title = title[:39] + "…"
+                text = (f"▶ {title} running — "
+                        f"controller is the game's")
+            else:
+                text = "▶ Game running — controller is the game's"
             color = "#7dc383"
         else:
-            text = "🎮 No controller detected"
-            color = "#9a9da5"
+            name = self.poller.controller_name
+            if name:
+                text = f"🎮 {name}"
+                color = "#7dc383"
+            else:
+                text = "🎮 No controller detected"
+                color = "#9a9da5"
         if self.pad_label.text() != text:
             self.pad_label.setText(text)
             self.pad_label.setStyleSheet(
