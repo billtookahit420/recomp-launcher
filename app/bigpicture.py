@@ -12,7 +12,10 @@ Navigation:
              Esc returns to the desktop view
   gamepad    d-pad / left stick move · A launches · B returns to
              the desktop view · LB / RB switch section
-             (polled via gamepad.py; keyboard always works)
+             (polled via gamepad.py; keyboard always works).
+             Detection is continuous — connect or wake the pad at
+             any time; the top bar shows its name, or "No
+             controller detected" while none is connected.
 
 B and Esc SWITCH BACK to the desktop view — Big Picture is a view,
 not a separate app, and closing it never quits the launcher.
@@ -37,6 +40,7 @@ BP_STYLE = """
 QWidget { background: #101216; color: #e8e8ea; }
 QLabel#bpsection { font-size: 30px; font-weight: bold; }
 QLabel#bpclock { font-size: 22px; color: #9a9da5; }
+QLabel#bppad { font-size: 16px; color: #9a9da5; }
 QLabel#bphelp { font-size: 14px; color: #7d8087; }
 QLabel#bpmeta { font-size: 15px; color: #9fb4d8; }
 QScrollArea { border: none; background: #101216; }
@@ -125,6 +129,10 @@ class BigPictureWindow(QWidget):
         self.section_label.setObjectName("bpsection")
         top.addWidget(self.section_label)
         top.addStretch(1)
+        self.pad_label = QLabel("")
+        self.pad_label.setObjectName("bppad")
+        top.addWidget(self.pad_label)
+        top.addSpacing(20)
         self.clock = QLabel("")
         self.clock.setObjectName("bpclock")
         top.addWidget(self.clock)
@@ -286,10 +294,27 @@ class BigPictureWindow(QWidget):
             super().keyPressEvent(event)
 
     def _poll_pad(self):
-        if not self.isVisible() or not self.poller.available:
+        if not self.isVisible():
             return
+        # No "available" gate here: poll() is what gives the
+        # backend its chance to (re)discover a controller, so it
+        # must keep being called while none is connected yet.
         for action in self.poller.poll():
             self.handle_action(action)
+        self._refresh_pad_status()
+
+    def _refresh_pad_status(self):
+        name = self.poller.controller_name
+        if name:
+            text = f"🎮 {name}"
+            color = "#7dc383"
+        else:
+            text = "🎮 No controller detected"
+            color = "#9a9da5"
+        if self.pad_label.text() != text:
+            self.pad_label.setText(text)
+            self.pad_label.setStyleSheet(
+                f"font-size: 16px; color: {color};")
 
     # ------------------------------------------------------------ open
     def open(self):
@@ -303,6 +328,7 @@ class BigPictureWindow(QWidget):
         self.raise_()
         self.activateWindow()
         self.setFocus()
+        self._refresh_pad_status()
         self._pad_timer.start(50)
         self._clock_timer.start(10000)
 
