@@ -630,6 +630,10 @@ class MainWindow(QMainWindow):
         self._meta_auto_attempted = set()   # systems auto-download
                                             # already tried this run
         self._meta_inflight = set()         # (kind, folder) markers
+        self._wiki_queue = []               # folders awaiting a
+                                            # Wikipedia worker slot
+        self._wiki_running = set()          # folders with a live
+                                            # Wikipedia worker
         self._meta_dlg = None               # created once, reused
         self._meta_status = ""
         self._build_ui()
@@ -1133,9 +1137,23 @@ class MainWindow(QMainWindow):
                     and focused["folder"] == game["folder"]:
                 self.bp.refresh_meta()
 
+    # Wikipedia fetches are capped at a handful of workers at a
+    # time. Every QThread owns OS resources for its whole life —
+    # on GLib-based Qt builds a wakeup pipe pair per thread, plus
+    # the fetch's socket — and a big library has hundreds of games
+    # awaiting a synopsis after a scan. Spawning one worker per
+    # game (the v1.3.0/v1.3.1 behaviour) exhausted the process's
+    # file descriptors at ~750 games and GLib aborted the app
+    # ("Creating pipes for GWakeup: Too many open files", field
+    # report 2026-11-04). The queue below keeps the same
+    # once-per-game semantics with a bounded footprint.
+    _WIKI_MAX_CONCURRENT = 4
+
     def _maybe_wiki(self, game):
         """Wikipedia is the last resort for a synopsis, and only
-        after the database pass ran (spec order 2–4 before 5)."""
+        after the database pass ran (spec order 2–4 before 5).
+        Eligible games join the bounded fetch queue instead of
+        spawning a worker each."""
         if self._closing:
             return
         meta = game.get("meta") or {}
@@ -1149,15 +1167,43 @@ class MainWindow(QMainWindow):
         if ("wiki", folder) in self._meta_inflight:
             return
         self._meta_inflight.add(("wiki", folder))
-        title = scanner.display_title(game)
-        worker = FuncWorker(
-            "wiki", lambda: metadata.wikipedia_synopsis(title))
-        self._run_worker(
-            worker,
-            lambda k, r, f=folder: self._wiki_done(f, r))
+        self._wiki_queue.append(folder)
+        self._pump_wiki_queue()
+
+    def _pump_wiki_queue(self):
+        """Start queued Wikipedia fetches as worker slots free.
+        Queued folders are re-validated at start time — a game
+        resolved (or removed by a rescan) while it waited is
+        skipped, never fetched twice."""
+        if self._closing:
+            return
+        while self._wiki_queue \
+                and len(self._wiki_running) < self._WIKI_MAX_CONCURRENT:
+            folder = self._wiki_queue.pop(0)
+            game = self._game_by_folder(folder)
+            if game is None:
+                self._meta_inflight.discard(("wiki", folder))
+                continue
+            meta = game.get("meta") or {}
+            if not meta.get("db_done") or meta.get("wiki_done"):
+                self._meta_inflight.discard(("wiki", folder))
+                continue
+            values, _src = metadata.effective(game)
+            if values.get("synopsis"):
+                meta["wiki_done"] = True
+                self._meta_inflight.discard(("wiki", folder))
+                continue
+            self._wiki_running.add(folder)
+            title = scanner.display_title(game)
+            worker = FuncWorker(
+                "wiki", lambda t=title: metadata.wikipedia_synopsis(t))
+            self._run_worker(
+                worker,
+                lambda k, r, f=folder: self._wiki_done(f, r))
 
     def _wiki_done(self, folder, result):
         self._meta_inflight.discard(("wiki", folder))
+        self._wiki_running.discard(folder)
         if self._closing:
             return
         game = self._game_by_folder(folder)
@@ -1174,6 +1220,7 @@ class MainWindow(QMainWindow):
         meta["wiki_done"] = True
         scanner.save_library(self.games)
         self._meta_ui_refresh(game)
+        self._pump_wiki_queue()
 
     def open_metadata_editor(self):
         game = self.selected
