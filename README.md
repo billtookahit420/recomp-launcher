@@ -47,6 +47,14 @@ The 8BitDo Ultimate 2's SDL mapping is built in, so that pad
 classifies correctly even on systems whose SDL database predates
 it.
 
+While a game you launched is running, the controller belongs to
+the game: Big Picture's pad input pauses and the top bar shows
+"▶ <game> running — controller is the game's" (like Steam), so
+playing can't navigate the library or launch a second title
+behind the game. Input resumes when the game exits — and
+whatever you're still holding at that moment won't fire; it
+only counts once you release it and press again.
+
 Launching from Big Picture uses the exact same path as the
 desktop view — RA token supply, sessions and recording behave
 identically — and when a game you launched from Big Picture
