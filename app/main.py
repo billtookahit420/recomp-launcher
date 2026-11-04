@@ -13,9 +13,12 @@ Steam-style game capture — the game's own frames, tapped inside
 the game process before present, so recordings can't tear
 (Linux; video only for now).
 
-Nothing here phones home on its own: RetroAchievements is only
-contacted when you have entered your own username + Web API key in
-Settings, and only to read your own profile.
+Network use is limited and stated plainly: game metadata is
+fetched automatically from the public libretro-database when
+games are scanned in (and Wikipedia is tried for a missing
+synopsis); RetroAchievements is only contacted when you have
+entered your own username + Web API key in Settings, and only to
+read your own profile.
 """
 import atexit
 import json
@@ -401,8 +404,10 @@ class SettingsDialog(QDialog):
         meta_note = QLabel(
             "Facts and synopses come from the libretro-database "
             "(RetroArch's metadata database — free, no account). "
-            "Only the systems in your library are downloaded. "
-            "Metadata you type yourself in a game's “Edit "
+            "Metadata downloads automatically when games are "
+            "scanned in — only the systems in your library are "
+            "fetched. Use the button above only to refresh it by "
+            "hand. Metadata you type yourself in a game's “Edit "
             "metadata…” dialog always wins and is never "
             "overwritten by a refresh.")
         meta_note.setObjectName("muted")
@@ -600,6 +605,8 @@ class MainWindow(QMainWindow):
         self._scan_pending = False
         self._metadb = None                 # metadata.LibretroDB (lazy)
         self._metadb_running = False
+        self._meta_auto_attempted = set()   # systems auto-download
+                                            # already tried this run
         self._meta_inflight = set()         # (kind, folder) markers
         self._meta_dlg = None               # created once, reused
         self._meta_status = ""
@@ -794,6 +801,7 @@ class MainWindow(QMainWindow):
                          if g["folder"] == self.selected["folder"]]
                 if still:
                     self._select_game(still[0])
+            self._auto_metadata_after_scan()
         finally:
             if self._scan_pending and not self._closing:
                 self._scan_pending = False
@@ -1137,9 +1145,11 @@ class MainWindow(QMainWindow):
             return "Downloading game metadata…"
         cached = self._metadb_instance().cached_systems()
         if not cached:
-            return ("Metadata database: not downloaded yet. The "
-                    "download is free and needs no account; only "
-                    "the systems in your library are fetched.")
+            return ("Metadata database: not downloaded yet — it "
+                    "will be fetched automatically when games are "
+                    "scanned in. The download is free and needs no "
+                    "account; only the systems in your library are "
+                    "fetched.")
         names = ", ".join(scanner.SYSTEMS[s][0]
                           for s in scanner.SYSTEM_ORDER if s in cached)
         return f"Metadata database downloaded for: {names}."
@@ -1158,9 +1168,10 @@ class MainWindow(QMainWindow):
                             or self.metadata_status_text())
 
     def start_metadata_download(self):
-        """Settings' Download / refresh button. Spam-safe: a
-        second click while a download runs coalesces (the button
-        is also disabled while running)."""
+        """Settings' Download / refresh button (manual refresh).
+        Spam-safe: a second click while a download runs coalesces
+        (the button is also disabled while running). Unrestricted:
+        it always re-fetches every system in the library."""
         if self._closing or self._metadb_running:
             return
         systems = sorted({g["system"] for g in self.games
@@ -1172,12 +1183,55 @@ class MainWindow(QMainWindow):
                 "download metadata for.")
             self._sync_meta_dialog()
             return
+        self._launch_metadata_download(systems)
+
+    def _launch_metadata_download(self, systems):
+        """Shared launch path for manual and automatic downloads."""
         self._metadb_running = True
         self._set_meta_status("Downloading game metadata…")
         self._sync_meta_dialog()
         db = self._metadb_instance()
-        worker = FuncWorker("metadb", lambda: db.download(systems))
+        systems = list(systems)
+        worker = FuncWorker(
+            "metadb", lambda: db.download(systems))
         self._run_worker(worker, self._metadb_download_done)
+
+    def _auto_metadata_after_scan(self):
+        """Automatic metadata on scan (Duane: “when it scans the
+        game in it auto fetches meta data and synopsis”).
+
+        Runs after every completed scan. Missing DAT sets for the
+        systems present are downloaded in the background (at most
+        one auto attempt per system per app run — a failed/offline
+        attempt is not retried on every rescan; a manual Settings
+        refresh stays unrestricted). When everything needed is
+        already cached — or was already attempted this run — the
+        all-games lookup pass runs straight away so newly scanned
+        games get metadata without being selected first. Never
+        blocks the UI and never runs two downloads at once."""
+        if self._closing or not self.games:
+            return
+        if self._metadb_running:
+            # Coalesce: the running download's done handler
+            # re-runs lookups for the whole (current) library,
+            # which includes anything this scan just added.
+            return
+        present = sorted({g["system"] for g in self.games
+                          if g.get("system")
+                          in metadata.SYSTEM_DB_FILE})
+        if not present:
+            return
+        cached = set(self._metadb_instance().cached_systems())
+        missing = [s for s in present if s not in cached]
+        to_fetch = [s for s in missing
+                    if s not in self._meta_auto_attempted]
+        if to_fetch:
+            self._meta_auto_attempted.update(to_fetch)
+            self._launch_metadata_download(to_fetch)
+            return
+        # Nothing new to download: still populate newly scanned
+        # games from the cached data (and any package-local data).
+        self._run_meta_all_pass()
 
     def _metadb_download_done(self, key, result):
         self._metadb_running = False
@@ -1198,10 +1252,20 @@ class MainWindow(QMainWindow):
         if self._closing:
             return
         # Re-run every game's lookup against the fresh data.
+        self._run_meta_all_pass()
+
+    def _run_meta_all_pass(self):
+        """Run the database/package lookup for every game in the
+        library on a worker (results land in _meta_all_done).
+        Guarded so two all-games passes never overlap."""
+        if self._closing or ("all", "") in self._meta_inflight:
+            return
         db = self._metadb_instance()
         snaps = [{k: g.get(k) for k in
                   ("system", "title", "title_override", "serial",
                    "folder")} for g in self.games]
+        if not snaps:
+            return
         self._meta_inflight.add(("all", ""))
 
         def work():
@@ -1244,6 +1308,14 @@ class MainWindow(QMainWindow):
             self._refresh_metadata(self.selected)
         if self.bp is not None and self.bp.isVisible():
             self.bp.refresh_meta()
+        # Wikipedia synopsis fallback for every game that still
+        # lacks one — not just the selected game — so a fresh scan
+        # fills synopses without the user clicking through the
+        # library. _maybe_wiki itself enforces the settled rules
+        # (db pass done, not already attempted, no synopsis yet,
+        # one inflight worker per game).
+        for game in list(self.games):
+            self._maybe_wiki(game)
 
     def _bp_focus_changed(self, game):
         if game is not None:
