@@ -224,6 +224,7 @@ class GamepadPoller:
         self._prev_buttons = set()
         self._stick_dir = None
         self._stick_next = 0.0
+        self._stick_latched = False
 
     @property
     def available(self):
@@ -237,6 +238,41 @@ class GamepadPoller:
     def controller_name(self):
         return getattr(self.backend, "controller_name", None)
 
+    @staticmethod
+    def _stick_direction(state):
+        if state.lx <= -_STICK_DEADZONE:
+            return "left"
+        if state.lx >= _STICK_DEADZONE:
+            return "right"
+        if state.ly <= -_STICK_DEADZONE:
+            return "up"
+        if state.ly >= _STICK_DEADZONE:
+            return "down"
+        return None
+
+    def reset_edges(self):
+        """Adopt the pad's current state as the baseline: buttons
+        already held and a stick already deflected produce no
+        action until they are released / returned to neutral and
+        pressed again. Big Picture calls this when pad input
+        resumes after a suspension (a launched game that owned
+        the pad has exited), so whatever the player is still
+        holding at that moment can't fire a phantom action —
+        e.g. launching the focused tile with the A button they
+        are holding from gameplay."""
+        state = self.backend.read()
+        if state is None:
+            self._prev_buttons = set()
+            self._stick_dir = None
+            self._stick_latched = False
+            return
+        self._prev_buttons = set(state.buttons)
+        direction = self._stick_direction(state)
+        self._stick_dir = direction
+        self._stick_latched = direction is not None
+        if direction is not None:
+            self._stick_next = time.monotonic() + _STICK_REPEAT_S
+
     def poll(self, now=None):
         now = time.monotonic() if now is None else now
         state = self.backend.read()
@@ -246,6 +282,7 @@ class GamepadPoller:
             # can't wedge the edge detector when a pad returns.
             self._prev_buttons = set()
             self._stick_dir = None
+            self._stick_latched = False
             return []
         actions = []
         for name in sorted(state.buttons - self._prev_buttons):
@@ -253,15 +290,14 @@ class GamepadPoller:
                 actions.append(_BUTTON_ACTIONS[name])
         self._prev_buttons = set(state.buttons)
 
-        direction = None
-        if state.lx <= -_STICK_DEADZONE:
-            direction = "left"
-        elif state.lx >= _STICK_DEADZONE:
-            direction = "right"
-        elif state.ly <= -_STICK_DEADZONE:
-            direction = "up"
-        elif state.ly >= _STICK_DEADZONE:
-            direction = "down"
+        direction = self._stick_direction(state)
+        if self._stick_latched:
+            # A deflection adopted by reset_edges(): swallow it
+            # until the stick returns to neutral.
+            if direction is None:
+                self._stick_latched = False
+                self._stick_dir = None
+            return actions
         if direction is None:
             self._stick_dir = None
         elif direction != self._stick_dir or now >= self._stick_next:
