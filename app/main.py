@@ -1289,6 +1289,26 @@ class MainWindow(QMainWindow):
                 "RECOMP_CAPTURE_FPS": str(fps),
                 "LD_PRELOAD": str(recording.find_capture_lib()),
             }
+            # Vulkan presents can't be hooked by the preload
+            # library; games that render with Vulkan are tapped by
+            # the implicit layer in bin/ instead. The loader only
+            # inserts it when RECOMP_CAPTURE=1 (the manifest's
+            # enable_environment), and these variables are set only
+            # on this recording launch — a plain launch leaves the
+            # game's environment exactly as before. VK_INSTANCE_
+            # LAYERS names it explicitly because some loader builds
+            # only search custom paths for explicit layers; the
+            # layer path lets the loader find the manifest, and
+            # LD_LIBRARY_PATH lets it resolve the manifest's
+            # relative library_path.
+            if recording.find_capture_layer():
+                cap_env["VK_ADD_LAYER_PATH"] = str(recording.BIN_DIR)
+                cap_env["VK_INSTANCE_LAYERS"] = \
+                    "VK_LAYER_RECOMP_CAPTURE"
+                prev = os.environ.get("LD_LIBRARY_PATH", "")
+                cap_env["LD_LIBRARY_PATH"] = \
+                    str(recording.BIN_DIR) + \
+                    (os.pathsep + prev if prev else "")
         try:
             proc, supplied = scanner.launch_game(game, self.settings,
                                                  LOG_DIR,
