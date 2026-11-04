@@ -9,13 +9,21 @@ How it works (Linux only):
     present calls (SDL_GL_SwapWindow / glXSwapBuffers /
     eglSwapBuffers), reads each finished frame back, and publishes
     it into a POSIX shared-memory ring.
+  * Games that present through Vulkan can't be hooked that way,
+    so the same launch also makes the implicit Vulkan layer
+    ``VK_LAYER_RECOMP_CAPTURE`` (also in ../bin) discoverable and
+    names it for the loader; the layer wraps vkQueuePresentKHR
+    and publishes into the same ring. The manifest's
+    enable_environment keeps the layer dormant unless
+    RECOMP_CAPTURE=1, and none of these variables are set on a
+    launch that isn't recording.
   * A small helper, ``recomp-recorder`` (also in ../bin), maps the
     ring and encodes the frames to MP4 with ffmpeg — NVENC when a
     real NVIDIA GPU is present, libx264 otherwise.
-  * A game that never publishes (no GL present path — a shell
-    launcher, a Vulkan-only build, a non-game executable) simply
-    has no tap: the capture reports itself unavailable for that
-    game and the game plays on untouched. There is deliberately no
+  * A game that never publishes (no present path either tap can
+    reach — a shell launcher, a non-game executable) simply has
+    no tap: the capture reports itself unavailable for that game
+    and the game plays on untouched. There is deliberately no
     screen-capture fallback.
 
 Phase 1 is VIDEO ONLY: the runtime exposes no clean post-mix audio
@@ -57,6 +65,16 @@ def default_recordings_dir() -> str:
 def find_capture_lib():
     p = BIN_DIR / "librecompcapture.so"
     return p if p.is_file() else None
+
+
+def find_capture_layer():
+    """The Vulkan capture layer (library + manifest), or None.
+    Optional next to find_capture_lib(): GL games record without
+    it, so its absence never makes capture itself unavailable —
+    Vulkan-presented games just report unavailable, as before."""
+    lib = BIN_DIR / "libVkLayer_recomp_capture.so"
+    manifest = BIN_DIR / "VkLayer_recomp_capture.json"
+    return lib if lib.is_file() and manifest.is_file() else None
 
 
 def find_recorder_binary():
