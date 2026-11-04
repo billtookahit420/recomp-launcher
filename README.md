@@ -177,8 +177,9 @@ select a game. The libretro-database metadata files are
 downloaded automatically when games are scanned in (public
 database files only — nothing about your library is sent), and
 Wikipedia is contacted for a synopsis when a scanned game has
-none from the other sources. The app ships with no credentials
-in it.
+none from the other sources; those lookups run a few at a time
+in the background, so a large library fills in gradually rather
+than all at once. The app ships with no credentials in it.
 
 ## Credits
 
