@@ -39,7 +39,7 @@ from PySide6.QtCore import Qt, QThread, QTimer, Signal  # noqa: E402
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-    QFileDialog, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog,
+    QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
     QMessageBox, QPushButton, QScrollArea, QSpinBox, QSplitter,
     QTextEdit, QVBoxLayout, QWidget,
@@ -286,9 +286,27 @@ class SettingsDialog(QDialog):
     def __init__(self, settings, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
-        self.resize(560, 660)
+        self.resize(560, 780)
+        # The stacked groups' natural height is ~765 px: as a plain
+        # layout that was also the dialog's hard MINIMUM height, so
+        # on any screen with less room the window manager had to
+        # force the dialog below its minimum on every drag frame.
+        # The groups now live in a scroll area — the dialog can
+        # shrink freely and scrolls instead of fighting the WM
+        # (field report: resizing Settings crashed the app,
+        # v1.3.0). The button box stays pinned below the scroll
+        # area, always visible.
+        self.setMinimumSize(440, 340)
         self.settings = settings
-        v = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        content = QWidget()
+        v = QVBoxLayout(content)
+        scroll.setWidget(content)
+        outer.addWidget(scroll, 1)
 
         lib = QGroupBox("Library folders (scanned for recomp packages)")
         lv = QVBoxLayout(lib)
@@ -422,7 +440,7 @@ class SettingsDialog(QDialog):
                                    | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        v.addWidget(buttons)
+        outer.addWidget(buttons)
 
     def _meta_clicked(self):
         if self.meta_download_fn is not None:
@@ -603,6 +621,10 @@ class MainWindow(QMainWindow):
         self._closing = False
         self._scan_active = False
         self._scan_pending = False
+        self._grid_gen = 0              # bumped when tiles are rebuilt
+        self._grid_laid_gen = -1        # gen _layout_grid last placed
+        self._grid_laid_cols = None     # column count it placed
+        self._layout_pending = False    # coalesced relayout scheduled
         self._metadb = None                 # metadata.LibretroDB (lazy)
         self._metadb_running = False
         self._meta_auto_attempted = set()   # systems auto-download
@@ -689,8 +711,24 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, obj, event):  # noqa: N802
         if obj is self.scroll.viewport() and event.type() == event.Type.Resize:
-            self._layout_grid()
+            self._schedule_layout_grid()
         return super().eventFilter(obj, event)
+
+    def _schedule_layout_grid(self):
+        """Coalesce resize bursts: a window drag fires a storm of
+        viewport resize events, and re-placing hundreds of tiles
+        for each one made the window lag seconds behind the pointer
+        on a large library (field report, v1.3.0). Collapse a burst
+        into one relayout at the size the burst settles on."""
+        if self._layout_pending or self._closing:
+            return
+        self._layout_pending = True
+        QTimer.singleShot(0, self._layout_grid_from_timer)
+
+    def _layout_grid_from_timer(self):
+        self._layout_pending = False
+        if not self._closing:
+            self._layout_grid()
 
     def _detail_panel(self):
         panel = QWidget()
@@ -892,6 +930,7 @@ class MainWindow(QMainWindow):
             tile.set_selected(self.selected is not None
                               and g["folder"] == self.selected["folder"])
             self.tiles.append(tile)
+        self._grid_gen += 1
         self._layout_grid()
 
     def _layout_grid(self):
@@ -899,8 +938,19 @@ class MainWindow(QMainWindow):
             return
         width = max(self.scroll.viewport().width(), 200)
         cols = max(1, width // (ART_W + 24))
+        # Placing tiles is O(n) addWidget calls, each invalidating
+        # the grid layout; doing it per resize event made large
+        # libraries lag hard while the window was dragged (and the
+        # app died mid-drag on the field machine). The placement
+        # only depends on the column count and the tile set, so
+        # when neither changed there is nothing to redo.
+        if cols == self._grid_laid_cols \
+                and self._grid_gen == self._grid_laid_gen:
+            return
         for i, tile in enumerate(self.tiles):
             self.grid.addWidget(tile, i // cols, i % cols)
+        self._grid_laid_cols = cols
+        self._grid_laid_gen = self._grid_gen
 
     # -------------------------------------------------------- detail
     def _select_game(self, game):
