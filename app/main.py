@@ -8,8 +8,10 @@ Game Gear, Virtual Boy), shows them as a box-art grid, launches a
 game with a click, shows your RetroAchievements progress per game
 (from your retroachievements.org profile via the Web API), holds
 your RA Connect token once and writes retroachievements.toml into
-game folders that don't have one, and records gameplay with GPU
-Screen Recorder (Linux, monitor capture).
+game folders that don't have one, and records gameplay with
+Steam-style game capture — the game's own frames, tapped inside
+the game process before present, so recordings can't tear
+(Linux; video only for now).
 
 Nothing here phones home on its own: RetroAchievements is only
 contacted when you have entered your own username + Web API key in
@@ -92,7 +94,6 @@ def default_settings():
         "recording": {
             "folder": recording.default_recordings_dir(),
             "framerate": 60,
-            "source": "screen",
             "audio": True,
         },
     }
@@ -135,8 +136,12 @@ def load_settings():
     except (TypeError, ValueError):
         rec["framerate"] = 60
     rec["framerate"] = max(24, min(240, rec["framerate"]))
-    if not isinstance(rec.get("source"), str) or not rec["source"]:
-        rec["source"] = "screen"
+    # The old screen-capture source option is gone (game capture is
+    # the only recording method now). The audio preference stays in
+    # the schema — recordings are video-only until the audio tap
+    # lands, and the Settings toggle is shown disabled rather than
+    # silently dropping the user's saved choice.
+    rec.pop("source", None)
     rec["audio"] = bool(rec.get("audio", True))
     return s
 
@@ -339,7 +344,7 @@ class SettingsDialog(QDialog):
         v.addWidget(ra_box)
 
         rec = settings.get("recording", {})
-        rbox = QGroupBox("Recording (GPU Screen Recorder)")
+        rbox = QGroupBox("Recording (game capture)")
         rform = QFormLayout(rbox)
         folder_row = QHBoxLayout()
         self.rec_folder = QLineEdit(
@@ -353,24 +358,32 @@ class SettingsDialog(QDialog):
         self.rec_fps.setRange(24, 240)
         self.rec_fps.setValue(int(rec.get("framerate", 60)))
         rform.addRow("Framerate:", self.rec_fps)
-        self.rec_source = QComboBox()
-        self.rec_source.setEditable(True)
-        self.rec_source.addItems(["screen"])
-        self.rec_source.setCurrentText(rec.get("source", "screen"))
-        rform.addRow("Capture source:", self.rec_source)
-        src_note = QLabel("“screen” records the monitor — the setup "
-                          "that fixed screen tearing. A monitor name "
-                          "(e.g. DP-1) works too. Window capture is "
-                          "deliberately not offered.")
-        src_note.setObjectName("muted")
-        src_note.setWordWrap(True)
-        rform.addRow(src_note)
-        self.rec_audio = QCheckBox("Record desktop audio")
-        self.rec_audio.setChecked(rec.get("audio", True))
+        self.rec_audio = QCheckBox("Record game audio")
+        self.rec_audio.setChecked(bool(rec.get("audio", True)))
+        self.rec_audio.setEnabled(False)
         rform.addRow(self.rec_audio)
-        state = QLabel("GPU Screen Recorder: "
-                       + ("found at " + recording.find_binary()
-                          if recording.available()
+        audio_note = QLabel("Audio isn't captured yet — recordings "
+                            "are video-only for now, so this is "
+                            "greyed out. Your choice is kept and "
+                            "will apply when the audio tap lands.")
+        audio_note.setObjectName("muted")
+        audio_note.setWordWrap(True)
+        rform.addRow(audio_note)
+        cap_note = QLabel("Recording taps the game's own frames "
+                          "inside the game process (Steam-style) — "
+                          "never the screen, so recordings can't "
+                          "tear. Tick “Record this session” on a "
+                          "game before launching it. Video only in "
+                          "this version (no audio yet). A game with "
+                          "no capture tap says recording is "
+                          "unavailable for it and plays normally.")
+        cap_note.setObjectName("muted")
+        cap_note.setWordWrap(True)
+        rform.addRow(cap_note)
+        state = QLabel("Game capture: "
+                       + ("ready — capture library, recorder and "
+                          "ffmpeg found"
+                          if recording.capture_available()
                           else recording.unavailable_reason()))
         state.setObjectName("muted")
         state.setWordWrap(True)
@@ -433,8 +446,7 @@ class SettingsDialog(QDialog):
         self.rec_folder.setText(
             rec.get("folder") or recording.default_recordings_dir())
         self.rec_fps.setValue(int(rec.get("framerate", 60)))
-        self.rec_source.setCurrentText(rec.get("source", "screen"))
-        self.rec_audio.setChecked(rec.get("audio", True))
+        self.rec_audio.setChecked(bool(rec.get("audio", True)))
         if self.meta_status_fn is not None:
             self.meta_status.setText(self.meta_status_fn())
 
@@ -462,7 +474,6 @@ class SettingsDialog(QDialog):
         s["recording"] = {
             "folder": self.rec_folder.text().strip(),
             "framerate": self.rec_fps.value(),
-            "source": self.rec_source.currentText().strip() or "screen",
             "audio": self.rec_audio.isChecked(),
         }
         return s
@@ -579,7 +590,8 @@ class MainWindow(QMainWindow):
         self._ra_wanted = None
         self._completion_cache = None
         self._sessions = {}                 # pid -> (game, proc)
-        self.recorder = recording.Recorder()
+        self.recorder = recording.GameCapture()
+        self._cap_reported = None   # negotiation state last announced
         self.bp = None                      # Big Picture window
         self._settings_dlg = None           # created once, reused
         self._bp_autostart_done = False
@@ -720,6 +732,8 @@ class MainWindow(QMainWindow):
             lambda: self.selected and self.launch(self.selected))
         v.addWidget(self.play_btn)
         self.record_session = QCheckBox("Record this session")
+        self.record_session.toggled.connect(
+            lambda *_: self._update_record_ui())
         v.addWidget(self.record_session)
         id_row = QHBoxLayout()
         self.d_ra_id = QLabel("RA game: —")
@@ -1256,9 +1270,29 @@ class MainWindow(QMainWindow):
     def launch(self, game):
         if self._closing:
             return
+        want_record = self.record_session.isChecked()
+        if want_record:
+            self.record_session.setChecked(False)
+        # Game capture is armed BEFORE the process starts: the tap
+        # lives in the game's own process via LD_PRELOAD, so the
+        # environment has to be there at exec time.
+        cap_env = None
+        shm_name = None
+        if want_record and recording.capture_available():
+            shm_name = (f"recomp-capture-{os.getpid()}-"
+                        f"{int(time.time() * 1000)}")
+            fps = int(self.settings.get("recording", {})
+                      .get("framerate", 60))
+            cap_env = {
+                "RECOMP_CAPTURE": "1",
+                "RECOMP_CAPTURE_SHM": shm_name,
+                "RECOMP_CAPTURE_FPS": str(fps),
+                "LD_PRELOAD": str(recording.find_capture_lib()),
+            }
         try:
             proc, supplied = scanner.launch_game(game, self.settings,
-                                                 LOG_DIR)
+                                                 LOG_DIR,
+                                                 extra_env=cap_env)
         except Exception as e:  # noqa: BLE001
             QMessageBox.warning(self, "Launch failed",
                                 f"Could not start "
@@ -1271,44 +1305,55 @@ class MainWindow(QMainWindow):
                     "token first.")
             self.d_toml.setText(self._toml_status(game))
         self.statusBar().showMessage(msg)
-        if self.record_session.isChecked():
-            self.record_session.setChecked(False)
-            if recording.available():
+        if want_record:
+            if shm_name is not None:
                 try:
                     out = self.recorder.start(
                         self.settings, scanner.display_title(game),
-                        tied_pid=proc.pid)
-                    msg += f" Recording to {out.name}."
+                        tied_pid=proc.pid, shm_name=shm_name)
+                    self._cap_reported = "pending"
+                    msg += (f" Recording: starting game capture → "
+                            f"{out.name}…")
                     self.statusBar().showMessage(msg)
                 except Exception as e:  # noqa: BLE001
                     self.statusBar().showMessage(
                         msg + f" Recording failed to start: {e}")
             else:
                 self.statusBar().showMessage(
-                    msg + " Recording skipped: "
+                    msg + " Recording unavailable: "
                     + recording.unavailable_reason())
         self._update_record_ui()
 
     # ----------------------------------------------------- recording
     def toggle_record(self):
+        # Game capture can only start WITH a game launch (the tap
+        # is preloaded into the game's process), so the toolbar
+        # button stops a live capture, or arms/disarms the next
+        # launch — it never records the desktop.
         if self.recorder.is_running():
             out = self.recorder.output
-            self.recorder.stop()
+            stats = self.recorder.stop()
+            if stats and stats.get("frames"):
+                self.statusBar().showMessage(
+                    f"Recording saved: {out}")
+            else:
+                self.statusBar().showMessage(
+                    "Recording stopped — no frames were captured.")
+            self._cap_reported = None
+        elif self.record_session.isChecked():
+            self.record_session.setChecked(False)
             self.statusBar().showMessage(
-                f"Recording saved: {out}")
+                "Recording disarmed — the next launch won't record.")
         else:
-            if not recording.available():
+            if not recording.capture_available():
                 QMessageBox.information(
                     self, "Recording unavailable",
                     recording.unavailable_reason())
                 return
-            title = (scanner.display_title(self.selected)
-                     if self.selected else "Desktop")
-            try:
-                out = self.recorder.start(self.settings, title)
-                self.statusBar().showMessage(f"Recording to {out}")
-            except Exception as e:  # noqa: BLE001
-                QMessageBox.warning(self, "Recording failed", str(e))
+            self.record_session.setChecked(True)
+            self.statusBar().showMessage(
+                "Recording armed — the next game you launch will be "
+                "recorded with game capture.")
         self._update_record_ui()
 
     def open_recordings(self):
@@ -1323,8 +1368,14 @@ class MainWindow(QMainWindow):
 
     def _update_record_ui(self):
         running = self.recorder.is_running()
-        self.record_btn.setText("■ Stop recording" if running
-                                else "● Record")
+        armed = self.record_session.isChecked()
+        if running:
+            text = "■ Stop recording"
+        elif armed:
+            text = "● Record (armed)"
+        else:
+            text = "● Record"
+        self.record_btn.setText(text)
         self.record_btn.setProperty("recording", "true" if running
                                     else "false")
         self.record_btn.style().unpolish(self.record_btn)
@@ -1333,12 +1384,32 @@ class MainWindow(QMainWindow):
             self.rec_label.setText("")
 
     def _tick(self):
+        # Capture negotiation: announce the outcome once — live
+        # game capture, or honestly unavailable for this game (no
+        # fallback, no silent nothing).
+        if self.recorder.state in ("pending", "live"):
+            state = self.recorder.poll()
+            if state != self._cap_reported:
+                self._cap_reported = state
+                if state == "live":
+                    self.statusBar().showMessage(
+                        f"Recording {self.recorder.game_title} — "
+                        f"game capture → "
+                        f"{self.recorder.output.name}")
+                elif state == "unavailable":
+                    self.statusBar().showMessage(
+                        "Recording unavailable for this game — it "
+                        "has no capture tap. The game plays "
+                        "normally.")
+                    self._update_record_ui()
         # REC elapsed display.
         if self.recorder.is_running():
             secs = int(self.recorder.elapsed())
+            label = ("● REC" if self.recorder.state == "live"
+                     else "● CAPTURE…")
             self.rec_label.setText(
-                f"● REC {secs // 3600:02d}:{(secs % 3600) // 60:02d}:"
-                f"{secs % 60:02d}")
+                f"{label} {secs // 3600:02d}:"
+                f"{(secs % 3600) // 60:02d}:{secs % 60:02d}")
         elif self.rec_label.text():
             self._update_record_ui()
         # Watch game sessions; a recording tied to a game stops when
@@ -1352,13 +1423,27 @@ class MainWindow(QMainWindow):
                     self.bp.raise_()
                     self.bp.activateWindow()
                     self.bp.setFocus()
-                if self.recorder.is_running() \
-                        and self.recorder.tied_pid == pid:
+                if self.recorder.tied_pid == pid \
+                        and self.recorder.state in (
+                            "pending", "live", "done", "unavailable"):
                     out = self.recorder.output
-                    self.recorder.stop()
-                    self.statusBar().showMessage(
-                        f"{scanner.display_title(game)} exited — "
-                        f"recording saved: {out}")
+                    stats = self.recorder.stop()
+                    self._cap_reported = None
+                    if stats and stats.get("frames"):
+                        self.statusBar().showMessage(
+                            f"{scanner.display_title(game)} exited "
+                            f"— recording saved: {out} (game "
+                            f"capture, {stats['frames']} frames, "
+                            f"{stats['encoder']})")
+                    elif self.recorder.state == "unavailable":
+                        self.statusBar().showMessage(
+                            f"{scanner.display_title(game)} exited "
+                            f"— recording was unavailable for this "
+                            f"game.")
+                    else:
+                        self.statusBar().showMessage(
+                            f"{scanner.display_title(game)} exited "
+                            f"— recording produced no frames.")
                     self._update_record_ui()
 
     # ------------------------------------------------- RA / Phase 2
