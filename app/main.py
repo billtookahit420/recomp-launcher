@@ -937,8 +937,19 @@ class MainWindow(QMainWindow):
                 games_provider=lambda: self.games,
                 on_launch=self._bp_launch,
                 on_back=self._bp_back,
-                on_focus=self._bp_focus_changed)
+                on_focus=self._bp_focus_changed,
+                input_suspended=lambda: bool(self._sessions),
+                running_title=self._running_game_title)
         self.bp.open()
+
+    def _running_game_title(self):
+        """Display title of a game currently running through the
+        launcher (Big Picture's running-state line), or None.
+        Read live from the session table on every pad poll tick,
+        so it tracks launches/exits from either view."""
+        for game, _proc in self._sessions.values():
+            return scanner.display_title(game)
+        return None
 
     def _bp_launch(self, game):
         # Same launch path as the desktop view: token supply,
