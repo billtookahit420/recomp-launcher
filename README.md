@@ -138,15 +138,20 @@ button, which arms the next launch), then launch it. The launcher
 starts the game with the capture library (`bin/librecompcapture.so`)
 preloaded and a `recomp-recorder` helper encoding the frames to
 MP4 (NVENC on NVIDIA hardware, libx264 otherwise; needs `ffmpeg`
-installed). The recording stops and finalizes by itself when the
-game exits. Settings → Recording has the output folder (default
-`~/Videos/Recomp Recordings`) and framerate (default 60), and
-shows whether game capture is ready.
+installed). Games that present through **Vulkan** are tapped by
+the bundled implicit Vulkan layer (`VK_LAYER_RECOMP_CAPTURE`,
+also in `bin/`) instead — it wraps the present call itself and
+feeds the same recorder. The layer is dormant unless the launcher
+launches a game with recording requested; a normal launch doesn't
+load it at all. The recording stops and finalizes by itself when
+the game exits. Settings → Recording has the output folder
+(default `~/Videos/Recomp Recordings`) and framerate (default
+60), and shows whether game capture is ready.
 
 There is **no screen-capture fallback**: a game whose frames
-can't be tapped (no OpenGL present path — e.g. a Vulkan-only
-build) reports "recording unavailable for this game" and plays
-normally. Recordings are **video only** for now — the runtime
+can't be tapped by either hook (no GL or Vulkan present path the
+taps can reach) reports "recording unavailable for this game" and
+plays normally. Recordings are **video only** for now — the runtime
 exposes no clean post-mix audio hook, and rather than fake it,
 this version says so; the "Record game audio" setting is shown
 greyed out (your choice is kept) until the audio tap lands.
@@ -176,7 +181,8 @@ smsggrecomp and vbrecomp (framework licenses: PolyForm
 Noncommercial 1.0.0 / MIT as noted per project; recomp-ui MIT,
 © 2026 Matthew Stanley) — and N64Recomp by Wiseguy (MIT) with the
 Zelda64Recomp runtime. Recording is the launcher's own game
-capture (librecompcapture + recomp-recorder, sources in `bin/`),
-encoding with ffmpeg. Box art in your library comes from your own
+capture (librecompcapture + the VK_LAYER_RECOMP_CAPTURE Vulkan
+layer + recomp-recorder, sources in `bin/`), encoding with
+ffmpeg. Box art in your library comes from your own
 packages (originally fetched from the libretro-thumbnails
 project).
