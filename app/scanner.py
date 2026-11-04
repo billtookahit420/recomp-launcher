@@ -416,9 +416,18 @@ def supply_ra_toml(game, settings):
     return True
 
 
-def launch_game(game, settings, log_dir):
+def launch_game(game, settings, log_dir, extra_env=None):
     """Supply the RA toml if needed, then start the game detached
-    with its own folder as cwd. Returns (Popen, supplied_toml)."""
+    with its own folder as cwd. Returns (Popen, supplied_toml).
+
+    extra_env: environment additions for this launch only (the
+    game-capture variables); merged over a copy of os.environ,
+    never written into the launcher's own environment."""
+    child_env = None
+    if extra_env:
+        child_env = dict(os.environ)
+        child_env.update({str(k): str(v)
+                          for k, v in extra_env.items()})
     supplied = supply_ra_toml(game, settings)
     if supplied:
         game["has_ra_toml"] = True
@@ -445,5 +454,6 @@ def launch_game(game, settings, log_dir):
     safe = re.sub(r"[^A-Za-z0-9]+", "-", display_title(game)).strip("-")
     logf = open(log_dir / f"{safe}.log", "ab")  # noqa: SIM115
     proc = subprocess.Popen(cmd, cwd=str(folder), start_new_session=True,
-                            stdout=logf, stderr=subprocess.STDOUT)
+                            stdout=logf, stderr=subprocess.STDOUT,
+                            env=child_env)
     return proc, supplied
