@@ -126,21 +126,34 @@ you can always see where a value came from.
 
 ## Recording (Linux)
 
-The launcher can drive **GPU Screen Recorder** — the same recorder
-used for stream captures — from the **Record** button, or per game
-with "Record this session" (recording then stops by itself when
-the game exits). Settings → Recording has the output folder
-(default `~/Videos/RecompLauncher`), framerate (default 60),
-capture source and the desktop-audio toggle, and shows whether
-GPU Screen Recorder was found.
+Recording is **Steam-style game capture**: the launcher taps the
+game's own frames inside the game process, before they are
+presented — the same trick Steam's game recording uses. Screen
+capture (any screen recorder) can tear on X11 because the
+compositor's presented frames themselves tear; frames tapped
+before present cannot tear by construction.
 
-Capture is **monitor/screen capture on purpose**: window capture
-tears while these games run borderless; screen capture is the
-setup that fixed that. Window capture is not offered.
+Tick **"Record this session"** on a game (or the **Record**
+button, which arms the next launch), then launch it. The launcher
+starts the game with the capture library (`bin/librecompcapture.so`)
+preloaded and a `recomp-recorder` helper encoding the frames to
+MP4 (NVENC on NVIDIA hardware, libx264 otherwise; needs `ffmpeg`
+installed). The recording stops and finalizes by itself when the
+game exits. Settings → Recording has the output folder (default
+`~/Videos/Recomp Recordings`) and framerate (default 60), and
+shows whether game capture is ready.
 
-Recording is **Linux-only**: GPU Screen Recorder has no Windows
-version, and the launcher says so on Windows rather than
-pretending. Files are named `<Game> - <date time>.mp4`.
+There is **no screen-capture fallback**: a game whose frames
+can't be tapped (no OpenGL present path — e.g. a Vulkan-only
+build) reports "recording unavailable for this game" and plays
+normally. Recordings are **video only** for now — the runtime
+exposes no clean post-mix audio hook, and rather than fake it,
+this version says so; the "Record game audio" setting is shown
+greyed out (your choice is kept) until the audio tap lands.
+Files are named `<Game> - <date time>.mp4`.
+
+Recording is **Linux-only** in this version, and the launcher
+says so on Windows rather than pretending.
 
 ## Your data
 
@@ -162,7 +175,8 @@ gbrecompiled, SNESRecomp, gbarecomp, segagenesisrecomp,
 smsggrecomp and vbrecomp (framework licenses: PolyForm
 Noncommercial 1.0.0 / MIT as noted per project; recomp-ui MIT,
 © 2026 Matthew Stanley) — and N64Recomp by Wiseguy (MIT) with the
-Zelda64Recomp runtime. Recording uses GPU Screen Recorder by
-dec05eba (GPLv3). Box art in your library comes from your own
+Zelda64Recomp runtime. Recording is the launcher's own game
+capture (librecompcapture + recomp-recorder, sources in `bin/`),
+encoding with ffmpeg. Box art in your library comes from your own
 packages (originally fetched from the libretro-thumbnails
 project).
