@@ -37,6 +37,16 @@ Big Picture controls:
 - Gamepad (any SDL2 controller): d-pad or left stick moves ·
   A plays · B goes back · LB / RB switch system.
 
+Controller detection is automatic and continuous: the pad does
+not need to be plugged in or awake before you open Big Picture —
+connect or wake it at any time and it is picked up within about a
+second (and if it sleeps or is unplugged, detection resumes the
+same way). The Big Picture top bar always shows the controller
+state: the connected pad's name, or "No controller detected".
+The 8BitDo Ultimate 2's SDL mapping is built in, so that pad
+classifies correctly even on systems whose SDL database predates
+it.
+
 Launching from Big Picture uses the exact same path as the
 desktop view — RA token supply, sessions and recording behave
 identically — and when a game you launched from Big Picture
